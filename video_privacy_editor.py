@@ -12,12 +12,14 @@ import cv2
 import numpy as np
 from pathlib import Path
 from dataclasses import dataclass
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict
+import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QFileDialog, QMessageBox,
-    QProgressBar, QFrame, QGroupBox, QStatusBar, QSplitter
+    QProgressBar, QFrame, QGroupBox, QStatusBar, QSplitter,
+    QRadioButton, QButtonGroup, QSpinBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QPoint
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
@@ -77,6 +79,13 @@ class VideoProcessor(QThread):
         # Blur settings
         self.blur_strength = 51
         
+        # Manual blur recording - maps frame_number to (x, y, w, h)
+        self.manual_blur_positions: Dict[int, Tuple[int, int, int, int]] = {}
+        self.is_manual_mode = False
+        
+        # Thread safety
+        self._lock = threading.Lock()
+        
     def load_video(self, path: str) -> bool:
         """Load a video file and extract its properties"""
         try:
@@ -97,13 +106,14 @@ class VideoProcessor(QThread):
             return False
     
     def get_frame(self, frame_number: int) -> Optional[np.ndarray]:
-        """Get a specific frame from the video"""
+        """Get a specific frame from the video (thread-safe)"""
         if self.cap is None:
             return None
         
-        self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-        ret, frame = self.cap.read()
-        return frame if ret else None
+        with self._lock:
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+            ret, frame = self.cap.read()
+            return frame.copy() if ret and frame is not None else None
     
     def initialize_tracker(self, frame: np.ndarray, roi: Tuple[int, int, int, int]):
         """
@@ -248,10 +258,14 @@ class VideoProcessor(QThread):
             return
         
         self.is_running = True
-        frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+        
+        with self._lock:
+            frame_number = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
         
         while self.is_running and frame_number < self.total_frames:
-            ret, frame = self.cap.read()
+            with self._lock:
+                ret, frame = self.cap.read()
+            
             if not ret:
                 break
             
@@ -262,7 +276,7 @@ class VideoProcessor(QThread):
                     self.tracking_updated.emit(new_roi)
                     frame = self.apply_blur(frame, new_roi)
             
-            self.frame_ready.emit(frame, frame_number)
+            self.frame_ready.emit(frame.copy(), frame_number)
             frame_number += 1
             
             # Control playback speed
@@ -274,15 +288,16 @@ class VideoProcessor(QThread):
             return
         
         try:
-            # Reset video to beginning
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            
-            # Re-initialize tracker if we have an ROI
-            if self.roi:
-                ret, first_frame = self.cap.read()
-                if ret:
-                    self.initialize_tracker(first_frame, self.roi)
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            with self._lock:
+                # Reset video to beginning
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                
+                # Re-initialize tracker if we have an ROI (for auto mode)
+                if self.roi and not self.is_manual_mode:
+                    ret, first_frame = self.cap.read()
+                    if ret:
+                        self.initialize_tracker(first_frame, self.roi)
+                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             
             # Create video writer
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -294,15 +309,24 @@ class VideoProcessor(QThread):
             frame_number = 0
             
             while True:
-                ret, frame = self.cap.read()
+                with self._lock:
+                    ret, frame = self.cap.read()
+                
                 if not ret:
                     break
                 
-                # Update tracking and apply blur
-                if self.is_tracking and self.tracking_initialized:
-                    new_roi = self.update_tracking(frame)
-                    if new_roi:
-                        frame = self.apply_blur(frame, new_roi)
+                # Apply blur based on mode
+                if self.is_manual_mode:
+                    # Manual mode: use recorded positions
+                    if frame_number in self.manual_blur_positions:
+                        roi = self.manual_blur_positions[frame_number]
+                        frame = self.apply_blur(frame, roi)
+                else:
+                    # Auto mode: use tracker
+                    if self.is_tracking and self.tracking_initialized:
+                        new_roi = self.update_tracking(frame)
+                        if new_roi:
+                            frame = self.apply_blur(frame, new_roi)
                 
                 out.write(frame)
                 frame_number += 1
@@ -329,16 +353,20 @@ class VideoCanvas(QLabel):
     """
     Custom widget for displaying video frames and handling ROI selection.
     
-    Supports mouse-based bounding box drawing for object selection.
+    Supports:
+    - Left-click drag: Draw ROI for auto-tracking
+    - Right-click hold: Manual blur that follows mouse
     """
     
     roi_selected = pyqtSignal(tuple)  # Emits (x, y, width, height)
+    manual_blur_active = pyqtSignal(bool, tuple)  # (is_active, (x, y, w, h))
     
     def __init__(self):
         super().__init__()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background-color: #1a1a2e; border: 2px solid #16213e;")
         self.setMinimumSize(640, 480)
+        self.setMouseTracking(True)  # Enable mouse move events without button press
         
         # Selection state
         self.is_selecting = False
@@ -355,6 +383,12 @@ class VideoCanvas(QLabel):
         self.current_roi: Optional[Tuple[int, int, int, int]] = None
         self.selection_mode = False
         
+        # Manual blur mode
+        self.manual_mode = False
+        self.is_right_clicking = False
+        self.manual_blur_pos: Optional[Tuple[int, int]] = None
+        self.manual_blur_size = (100, 100)  # Default size for manual blur
+        
     def enable_selection(self, enable: bool):
         """Enable or disable ROI selection mode"""
         self.selection_mode = enable
@@ -363,9 +397,23 @@ class VideoCanvas(QLabel):
         else:
             self.setCursor(Qt.CursorShape.ArrowCursor)
     
-    def display_frame(self, frame: np.ndarray):
+    def set_manual_mode(self, enable: bool):
+        """Enable or disable manual blur mode"""
+        self.manual_mode = enable
+        if enable:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+    
+    def set_manual_blur_size(self, width: int, height: int):
+        """Set the size of the manual blur region"""
+        self.manual_blur_size = (width, height)
+    
+    def display_frame(self, frame: np.ndarray, apply_manual_blur: bool = False):
         """Display a frame on the canvas with proper scaling"""
-        self.current_frame = frame
+        self.current_frame = frame.copy()
+        
+        # Apply manual blur if right-click is held
+        if apply_manual_blur and self.is_right_clicking and self.manual_blur_pos:
+            frame = self._apply_manual_blur(frame)
         
         # Convert BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -393,15 +441,69 @@ class VideoCanvas(QLabel):
         q_img = QImage(scaled.data, new_w, new_h, bytes_per_line, QImage.Format.Format_RGB888)
         pixmap = QPixmap.fromImage(q_img)
         
-        # Draw ROI if present
-        if self.current_roi:
+        # Draw ROI if present and not in manual mode
+        if self.current_roi and not self.manual_mode:
             pixmap = self._draw_roi_on_pixmap(pixmap)
         
         # Draw selection rectangle if selecting
         if self.selection_rect and self.is_selecting:
             pixmap = self._draw_selection_on_pixmap(pixmap)
         
+        # Draw manual blur indicator
+        if self.manual_mode and self.is_right_clicking and self.manual_blur_pos:
+            pixmap = self._draw_manual_blur_indicator(pixmap)
+        
         self.setPixmap(pixmap)
+    
+    def _apply_manual_blur(self, frame: np.ndarray) -> np.ndarray:
+        """Apply blur at manual position"""
+        if not self.manual_blur_pos:
+            return frame
+        
+        result = frame.copy()
+        x, y = self.manual_blur_pos
+        w, h = self.manual_blur_size
+        
+        # Center the blur on mouse position
+        x1 = max(0, x - w // 2)
+        y1 = max(0, y - h // 2)
+        x2 = min(frame.shape[1], x + w // 2)
+        y2 = min(frame.shape[0], y + h // 2)
+        
+        if x2 > x1 and y2 > y1:
+            region = result[y1:y2, x1:x2]
+            blurred = cv2.GaussianBlur(region, (51, 51), 0)
+            result[y1:y2, x1:x2] = blurred
+        
+        return result
+    
+    def _draw_manual_blur_indicator(self, pixmap: QPixmap) -> QPixmap:
+        """Draw indicator for manual blur position"""
+        if not self.manual_blur_pos:
+            return pixmap
+        
+        x, y = self.manual_blur_pos
+        w, h = self.manual_blur_size
+        
+        # Convert to widget coordinates
+        wx = int((x - w // 2) * self.scale_factor)
+        wy = int((y - h // 2) * self.scale_factor)
+        ww = int(w * self.scale_factor)
+        wh = int(h * self.scale_factor)
+        
+        painter = QPainter(pixmap)
+        pen = QPen(QColor(255, 165, 0), 3)  # Orange for manual
+        painter.setPen(pen)
+        painter.drawRect(wx, wy, ww, wh)
+        
+        # Draw label
+        font = QFont("Segoe UI", 10, QFont.Weight.Bold)
+        painter.setFont(font)
+        painter.setPen(QColor(255, 165, 0))
+        painter.drawText(wx + 5, wy - 5, "🖱️ Manual Blur")
+        
+        painter.end()
+        return pixmap
     
     def _draw_roi_on_pixmap(self, pixmap: QPixmap) -> QPixmap:
         """Draw the current ROI rectangle on the pixmap"""
@@ -425,7 +527,7 @@ class VideoCanvas(QLabel):
         font = QFont("Segoe UI", 10, QFont.Weight.Bold)
         painter.setFont(font)
         painter.setPen(QColor(0, 255, 136))
-        painter.drawText(wx + 5, wy - 5, "🎯 Tracking")
+        painter.drawText(wx + 5, wy - 5, "🎯 Auto Tracking")
         
         painter.end()
         return pixmap
@@ -447,51 +549,91 @@ class VideoCanvas(QLabel):
         return pixmap
     
     def mousePressEvent(self, event):
-        """Start ROI selection"""
-        if not self.selection_mode:
+        """Handle mouse press - left for selection, right for manual blur"""
+        if event.button() == Qt.MouseButton.RightButton and self.manual_mode:
+            self.is_right_clicking = True
+            self._update_manual_blur_pos(event.pos())
+            self.manual_blur_active.emit(True, self._get_manual_blur_roi())
             return
         
-        self.is_selecting = True
-        self.selection_start = event.pos()
-        self.selection_rect = QRect(self.selection_start, self.selection_start)
+        if event.button() == Qt.MouseButton.LeftButton and self.selection_mode:
+            self.is_selecting = True
+            self.selection_start = event.pos()
+            self.selection_rect = QRect(self.selection_start, self.selection_start)
     
     def mouseMoveEvent(self, event):
-        """Update selection rectangle during drag"""
-        if not self.is_selecting or not self.selection_start:
+        """Update selection or manual blur position during drag"""
+        # Manual blur - follow mouse while right-click held
+        if self.is_right_clicking and self.manual_mode:
+            self._update_manual_blur_pos(event.pos())
+            self.manual_blur_active.emit(True, self._get_manual_blur_roi())
+            if self.current_frame is not None:
+                self.display_frame(self.current_frame, apply_manual_blur=True)
             return
         
-        self.selection_rect = QRect(self.selection_start, event.pos()).normalized()
-        
-        # Redraw current frame to show selection
-        if self.current_frame is not None:
-            self.display_frame(self.current_frame)
+        # Selection rectangle
+        if self.is_selecting and self.selection_start:
+            self.selection_rect = QRect(self.selection_start, event.pos()).normalized()
+            if self.current_frame is not None:
+                self.display_frame(self.current_frame)
     
     def mouseReleaseEvent(self, event):
-        """Complete ROI selection and emit signal"""
-        if not self.is_selecting:
+        """Handle mouse release"""
+        if event.button() == Qt.MouseButton.RightButton and self.is_right_clicking:
+            self.is_right_clicking = False
+            self.manual_blur_pos = None
+            self.manual_blur_active.emit(False, (0, 0, 0, 0))
+            if self.current_frame is not None:
+                self.display_frame(self.current_frame)
             return
         
-        self.is_selecting = False
-        
-        if self.selection_rect and self.current_frame is not None:
-            # Convert widget coordinates back to video coordinates
-            x = int((self.selection_rect.x() - self.offset_x) / self.scale_factor)
-            y = int((self.selection_rect.y() - self.offset_y) / self.scale_factor)
-            w = int(self.selection_rect.width() / self.scale_factor)
-            h = int(self.selection_rect.height() / self.scale_factor)
+        if event.button() == Qt.MouseButton.LeftButton and self.is_selecting:
+            self.is_selecting = False
             
-            # Validate minimum size
-            if w > 10 and h > 10:
-                # Clamp to video dimensions
-                h_frame, w_frame = self.current_frame.shape[:2]
-                x = max(0, min(x, w_frame - w))
-                y = max(0, min(y, h_frame - h))
+            if self.selection_rect and self.current_frame is not None:
+                # Convert widget coordinates back to video coordinates
+                x = int((self.selection_rect.x() - self.offset_x) / self.scale_factor)
+                y = int((self.selection_rect.y() - self.offset_y) / self.scale_factor)
+                w = int(self.selection_rect.width() / self.scale_factor)
+                h = int(self.selection_rect.height() / self.scale_factor)
                 
-                self.current_roi = (x, y, w, h)
-                self.roi_selected.emit((x, y, w, h))
+                # Validate minimum size
+                if w > 10 and h > 10:
+                    # Clamp to video dimensions
+                    h_frame, w_frame = self.current_frame.shape[:2]
+                    x = max(0, min(x, w_frame - w))
+                    y = max(0, min(y, h_frame - h))
+                    
+                    self.current_roi = (x, y, w, h)
+                    self.roi_selected.emit((x, y, w, h))
+            
+            self.selection_rect = None
+            self.enable_selection(False)
+    
+    def _update_manual_blur_pos(self, pos: QPoint):
+        """Update manual blur position from widget coordinates"""
+        if self.current_frame is None:
+            return
         
-        self.selection_rect = None
-        self.enable_selection(False)
+        # Convert widget coordinates to video coordinates
+        x = int((pos.x() - self.offset_x) / self.scale_factor)
+        y = int((pos.y() - self.offset_y) / self.scale_factor)
+        
+        # Clamp to video dimensions
+        h, w = self.current_frame.shape[:2]
+        x = max(0, min(x, w))
+        y = max(0, min(y, h))
+        
+        self.manual_blur_pos = (x, y)
+    
+    def _get_manual_blur_roi(self) -> Tuple[int, int, int, int]:
+        """Get the current manual blur ROI"""
+        if not self.manual_blur_pos:
+            return (0, 0, 0, 0)
+        
+        x, y = self.manual_blur_pos
+        w, h = self.manual_blur_size
+        return (x - w // 2, y - h // 2, w, h)
 
 
 class MainWindow(QMainWindow):
@@ -514,6 +656,12 @@ class MainWindow(QMainWindow):
         # State
         self.current_frame_number = 0
         self.is_playing = False
+        
+        # Manual recording state
+        self.is_recording_manual = False
+        self.manual_playback_timer = QTimer()
+        self.manual_playback_timer.timeout.connect(self._manual_record_frame)
+        self.slow_fps = 5  # Slow playback at 5 FPS for easier tracking
         
         # Create UI
         self._create_ui()
@@ -629,6 +777,7 @@ class MainWindow(QMainWindow):
         # Video canvas
         self.canvas = VideoCanvas()
         self.canvas.roi_selected.connect(self._on_roi_selected)
+        self.canvas.manual_blur_active.connect(self._on_manual_blur)
         left_panel.addWidget(self.canvas, 1)
         
         # Timeline slider
@@ -683,8 +832,29 @@ class MainWindow(QMainWindow):
         panel.setMaximumWidth(350)
         layout = QVBoxLayout(panel)
         
-        # ROI Selection group
-        roi_group = QGroupBox("🎯 Region Selection")
+        # Mode Selection group
+        mode_group = QGroupBox("🔀 Blur Mode")
+        mode_layout = QVBoxLayout(mode_group)
+        
+        self.mode_button_group = QButtonGroup(self)
+        
+        self.radio_auto = QRadioButton("🎯 Auto Track (left-click to select, tracks object)")
+        self.radio_auto.setChecked(True)
+        self.radio_auto.setStyleSheet("color: #c9d1d9;")
+        self.mode_button_group.addButton(self.radio_auto, 0)
+        mode_layout.addWidget(self.radio_auto)
+        
+        self.radio_manual = QRadioButton("🖱️ Manual (right-click hold to blur)")
+        self.radio_manual.setStyleSheet("color: #c9d1d9;")
+        self.mode_button_group.addButton(self.radio_manual, 1)
+        mode_layout.addWidget(self.radio_manual)
+        
+        self.mode_button_group.idClicked.connect(self._on_mode_change)
+        
+        layout.addWidget(mode_group)
+        
+        # ROI Selection group (for Auto mode)
+        roi_group = QGroupBox("🎯 Auto Track Settings")
         roi_layout = QVBoxLayout(roi_group)
         
         self.btn_select_roi = QPushButton("📍 Select Region of Interest")
@@ -697,6 +867,58 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.roi_label)
         
         layout.addWidget(roi_group)
+        
+        # Manual Blur Settings group
+        self.manual_group = QGroupBox("🖱️ Manual Blur Settings")
+        manual_layout = QVBoxLayout(self.manual_group)
+        
+        size_label = QLabel("Blur Region Size:")
+        manual_layout.addWidget(size_label)
+        
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("W:"))
+        self.manual_width_spin = QSpinBox()
+        self.manual_width_spin.setRange(20, 500)
+        self.manual_width_spin.setValue(100)
+        self.manual_width_spin.valueChanged.connect(self._on_manual_size_change)
+        size_layout.addWidget(self.manual_width_spin)
+        
+        size_layout.addWidget(QLabel("H:"))
+        self.manual_height_spin = QSpinBox()
+        self.manual_height_spin.setRange(20, 500)
+        self.manual_height_spin.setValue(100)
+        self.manual_height_spin.valueChanged.connect(self._on_manual_size_change)
+        size_layout.addWidget(self.manual_height_spin)
+        
+        manual_layout.addLayout(size_layout)
+        
+        # Playback speed for recording
+        speed_layout = QHBoxLayout()
+        speed_layout.addWidget(QLabel("Recording Speed (FPS):"))
+        self.speed_spin = QSpinBox()
+        self.speed_spin.setRange(1, 15)
+        self.speed_spin.setValue(5)
+        self.speed_spin.valueChanged.connect(self._on_speed_change)
+        speed_layout.addWidget(self.speed_spin)
+        manual_layout.addLayout(speed_layout)
+        
+        # Recording count display
+        self.recording_count_label = QLabel("📹 Recorded: 0 frames")
+        self.recording_count_label.setStyleSheet("color: #58a6ff;")
+        manual_layout.addWidget(self.recording_count_label)
+        
+        # Clear recording button
+        self.btn_clear_recording = QPushButton("🗑️ Clear Recording")
+        self.btn_clear_recording.clicked.connect(self._clear_manual_recording)
+        manual_layout.addWidget(self.btn_clear_recording)
+        
+        self.manual_hint = QLabel("💡 Hold right-click: video plays slowly,\\nmove mouse to follow object")
+        self.manual_hint.setStyleSheet("color: #ffa500; font-style: italic;")
+        self.manual_hint.setWordWrap(True)
+        manual_layout.addWidget(self.manual_hint)
+        
+        self.manual_group.setVisible(False)  # Hidden by default (Auto mode)
+        layout.addWidget(self.manual_group)
         
         # Tracking group
         track_group = QGroupBox("🔄 Object Tracking")
@@ -943,10 +1165,104 @@ class MainWindow(QMainWindow):
         self.blur_value_label.setText(str(value))
         self.processor.blur_strength = value
     
+    def _on_mode_change(self, mode_id: int):
+        """Handle mode change between Auto and Manual"""
+        if mode_id == 0:  # Auto mode
+            self.canvas.set_manual_mode(False)
+            self.manual_group.setVisible(False)
+            self.processor.is_manual_mode = False
+            self.processor.manual_blur_positions.clear()
+            self.status_bar.showMessage("Auto mode: Select a region to track")
+        else:  # Manual mode
+            self.canvas.set_manual_mode(True)
+            self.manual_group.setVisible(True)
+            self.processor.is_manual_mode = True
+            self.processor.manual_blur_positions.clear()
+            self.status_bar.showMessage("Manual mode: Hold right-click to record blur positions while video plays slowly")
+    
+    def _on_manual_size_change(self):
+        """Handle manual blur size change"""
+        width = self.manual_width_spin.value()
+        height = self.manual_height_spin.value()
+        self.canvas.set_manual_blur_size(width, height)
+    
+    def _on_speed_change(self, value: int):
+        """Handle recording speed change"""
+        self.slow_fps = value
+    
+    def _clear_manual_recording(self):
+        """Clear all recorded manual blur positions"""
+        self.processor.manual_blur_positions.clear()
+        self.recording_count_label.setText("📹 Recorded: 0 frames")
+        self.status_bar.showMessage("Manual recording cleared")
+    
+    def _on_manual_blur(self, is_active: bool, roi: tuple):
+        """Handle manual blur - start/stop slow playback recording"""
+        if is_active:
+            # Start slow playback recording
+            self.is_recording_manual = True
+            self.processor.is_manual_mode = True
+            self.manual_playback_timer.start(int(1000 / self.slow_fps))
+            self.status_bar.showMessage(f"🔴 RECORDING - Move mouse to follow object (Frame {self.current_frame_number})")
+        else:
+            # Stop recording
+            self.is_recording_manual = False
+            self.manual_playback_timer.stop()
+            recorded_count = len(self.processor.manual_blur_positions)
+            self.status_bar.showMessage(f"⏹️ Recording stopped - {recorded_count} frames recorded")
+    
+    def _manual_record_frame(self):
+        """Called by timer during manual recording - advance frame and record position"""
+        if not self.is_recording_manual or self.processor.cap is None:
+            return
+        
+        # Check if we've reached the end
+        if self.current_frame_number >= self.processor.total_frames - 1:
+            self.is_recording_manual = False
+            self.manual_playback_timer.stop()
+            self.status_bar.showMessage(f"✅ Recording complete - {len(self.processor.manual_blur_positions)} frames recorded")
+            return
+        
+        # Get mouse position from canvas and record it
+        if self.canvas.is_right_clicking and self.canvas.manual_blur_pos:
+            roi = self.canvas._get_manual_blur_roi()
+            self.processor.manual_blur_positions[self.current_frame_number] = roi
+        
+        # Advance to next frame
+        self.current_frame_number += 1
+        frame = self.processor.get_frame(self.current_frame_number)
+        
+        if frame is not None:
+            # Apply blur at current mouse position for preview
+            if self.canvas.manual_blur_pos:
+                roi = self.canvas._get_manual_blur_roi()
+                frame = self.processor.apply_blur(frame, roi)
+            
+            self.canvas.display_frame(frame, apply_manual_blur=False)
+            
+            # Update timeline
+            self.timeline.blockSignals(True)
+            self.timeline.setValue(self.current_frame_number)
+            self.timeline.blockSignals(False)
+            
+            # Update labels
+            current_time = self.current_frame_number / self.processor.fps
+            total_time = self.processor.total_frames / self.processor.fps
+            self.time_label.setText(f"{self._format_time(current_time)} / {self._format_time(total_time)}")
+            self.frame_label.setText(f"Frame: {self.current_frame_number} / {self.processor.total_frames}")
+            
+            recorded = len(self.processor.manual_blur_positions)
+            self.recording_count_label.setText(f"📹 Recorded: {recorded} frames")
+            self.status_bar.showMessage(f"🔴 RECORDING - Frame {self.current_frame_number} ({recorded} recorded)")
+    
     def _export_video(self):
         """Export the processed video"""
-        if not self.processor.tracking_initialized:
-            QMessageBox.warning(self, "Warning", "Please start tracking before exporting.")
+        # Check if we have something to export
+        has_auto_tracking = self.processor.tracking_initialized
+        has_manual_recording = len(self.processor.manual_blur_positions) > 0
+        
+        if not has_auto_tracking and not has_manual_recording:
+            QMessageBox.warning(self, "Warning", "Please record blur positions or start auto tracking before exporting.")
             return
         
         path, _ = QFileDialog.getSaveFileName(
