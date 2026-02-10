@@ -1,0 +1,1431 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ScreenCap — Screen Recorder</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <style>
+    *,
+    *::before,
+    *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface-2: #1a1a26;
+      --surface-3: #22222f;
+      --border: #2a2a3a;
+      --border-active: #4a4a6a;
+      --text: #e8e8f0;
+      --text-dim: #8888a0;
+      --text-muted: #555568;
+      --accent: #ff3b5c;
+      --accent-glow: rgba(255, 59, 92, 0.25);
+      --accent-soft: rgba(255, 59, 92, 0.08);
+      --green: #2dd4a0;
+      --green-glow: rgba(45, 212, 160, 0.25);
+      --amber: #f0b429;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --radius-lg: 16px;
+    }
+
+    body {
+      font-family: 'DM Sans', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow-x: hidden;
+      position: relative;
+      padding: 24px 0;
+    }
+
+    /* Subtle background grid */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 50% 0%, rgba(255, 59, 92, 0.04) 0%, transparent 60%),
+        linear-gradient(rgba(255, 255, 255, 0.015) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.015) 1px, transparent 1px);
+      background-size: 100% 100%, 60px 60px, 60px 60px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .app {
+      position: relative;
+      z-index: 1;
+      width: 100%;
+      max-width: 520px;
+      padding: 24px;
+    }
+
+    /* Header */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 32px;
+    }
+
+    .logo {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--accent), #ff6b81);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .logo svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .header .version {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+      background: var(--surface-2);
+      padding: 3px 8px;
+      border-radius: 6px;
+      margin-left: auto;
+    }
+
+    /* Preview area */
+    .preview-container {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      margin-bottom: 24px;
+      transition: border-color 0.3s;
+    }
+
+    .preview-container.recording {
+      border-color: var(--accent);
+      box-shadow: 0 0 30px var(--accent-glow), inset 0 0 30px rgba(255, 59, 92, 0.03);
+    }
+
+    .preview-container.paused {
+      border-color: var(--amber);
+      box-shadow: 0 0 30px rgba(240, 180, 41, 0.15);
+    }
+
+    #preview {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: none;
+      background: #000;
+    }
+
+    .preview-placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--text-muted);
+    }
+
+    .preview-placeholder svg {
+      width: 48px;
+      height: 48px;
+      opacity: 0.3;
+    }
+
+    .preview-placeholder span {
+      font-size: 13px;
+      letter-spacing: 0.3px;
+    }
+
+    .preview-placeholder.hidden {
+      display: none;
+    }
+
+    /* Recording indicator */
+    .rec-badge {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.7);
+      backdrop-filter: blur(12px);
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      font-weight: 500;
+      z-index: 2;
+    }
+
+    .rec-badge.visible {
+      display: flex;
+    }
+
+    .rec-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulse-dot 1.2s ease-in-out infinite;
+    }
+
+    .rec-badge.paused .rec-dot {
+      background: var(--amber);
+      animation: none;
+    }
+
+    @keyframes pulse-dot {
+
+      0%,
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.4;
+        transform: scale(0.85);
+      }
+    }
+
+    /* Audio controls section */
+    .section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+
+    .audio-toggles {
+      display: flex;
+      gap: 10px;
+    }
+
+    .audio-toggle {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px;
+      background: var(--surface-2);
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s;
+      user-select: none;
+    }
+
+    .audio-toggle:hover {
+      border-color: var(--border-active);
+      background: var(--surface-3);
+    }
+
+    .audio-toggle.active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .audio-toggle .icon-wrap {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--surface-3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: all 0.2s;
+    }
+
+    .audio-toggle.active .icon-wrap {
+      background: var(--accent);
+      box-shadow: 0 2px 12px var(--accent-glow);
+    }
+
+    .audio-toggle .icon-wrap svg {
+      width: 18px;
+      height: 18px;
+      color: var(--text-dim);
+      transition: color 0.2s;
+    }
+
+    .audio-toggle.active .icon-wrap svg {
+      color: #fff;
+    }
+
+    .toggle-info {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+
+    .toggle-info .name {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .toggle-info .status {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .audio-toggle.active .toggle-info .status {
+      color: var(--accent);
+    }
+
+    /* Audio level meter */
+    .level-meter {
+      margin-top: 12px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--surface-2);
+      border-radius: var(--radius-sm);
+    }
+
+    .level-meter.visible {
+      display: flex;
+    }
+
+    .level-meter .label {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+      white-space: nowrap;
+    }
+
+    .meter-bar-container {
+      flex: 1;
+      height: 4px;
+      background: var(--surface-3);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .meter-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--green), var(--amber), var(--accent));
+      border-radius: 2px;
+      transition: width 0.08s linear;
+    }
+
+    /* Settings row */
+    .settings-row {
+      display: flex;
+      gap: 10px;
+    }
+
+    .setting-item {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .setting-item label {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+    }
+
+    .setting-item select {
+      appearance: none;
+      background: var(--surface-2) url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23555568' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 32px 10px 12px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+    }
+
+    .setting-item select:hover {
+      border-color: var(--border-active);
+    }
+
+    .setting-item select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .setting-item select option {
+      background: var(--surface);
+    }
+
+    /* Main controls */
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 24px;
+    }
+
+    .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: none;
+      border-radius: var(--radius);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      padding: 14px 24px;
+      letter-spacing: 0.2px;
+    }
+
+    .btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .btn-record {
+      flex: 1;
+      background: var(--accent);
+      color: #fff;
+      box-shadow: 0 4px 20px var(--accent-glow);
+    }
+
+    .btn-record:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 28px var(--accent-glow);
+    }
+
+    .btn-record:active {
+      transform: translateY(0);
+    }
+
+    .btn-record.recording {
+      background: var(--surface-2);
+      border: 1.5px solid var(--border);
+      color: var(--text);
+      box-shadow: none;
+    }
+
+    .btn-record.recording:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .btn-secondary {
+      background: var(--surface-2);
+      border: 1.5px solid var(--border);
+      color: var(--text);
+      padding: 14px 18px;
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--border-active);
+      background: var(--surface-3);
+    }
+
+    .btn-secondary.active {
+      border-color: var(--amber);
+      color: var(--amber);
+    }
+
+    .btn:disabled {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+
+    /* Timer */
+    .timer {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--text-dim);
+      min-width: 72px;
+      text-align: center;
+      padding: 8px;
+      background: var(--surface);
+      border-radius: var(--radius-sm);
+      border: 1px solid var(--border);
+    }
+
+    .timer.recording {
+      color: var(--accent);
+    }
+
+    .timer.paused {
+      color: var(--amber);
+    }
+
+    /* Download section */
+    .download-section {
+      display: none;
+      margin-top: 16px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      animation: slideIn 0.3s ease;
+    }
+
+    .download-section.visible {
+      display: block;
+    }
+
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(8px);
+      }
+
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .download-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .download-header .info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .download-header .title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--green);
+    }
+
+    .download-header .meta {
+      font-size: 11px;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--text-muted);
+    }
+
+    .btn-download {
+      background: var(--green);
+      color: var(--bg);
+      box-shadow: 0 4px 16px var(--green-glow);
+    }
+
+    .btn-download:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 24px var(--green-glow);
+    }
+
+    /* Device selection */
+    .section-label-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .btn-icon {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+
+    .btn-icon:hover {
+      border-color: var(--border-active);
+      color: var(--text-dim);
+      background: var(--surface-3);
+    }
+
+    .btn-icon.spinning svg {
+      animation: spin 0.6s linear;
+    }
+
+    @keyframes spin {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .device-selectors {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .device-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .device-label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+
+    .device-item select {
+      appearance: none;
+      background: var(--surface-2) url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%23555568' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+      border: 1.5px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 32px 10px 12px;
+      color: var(--text);
+      font-family: 'DM Sans', sans-serif;
+      font-size: 13px;
+      cursor: pointer;
+      transition: border-color 0.2s;
+      width: 100%;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+
+    .device-item select:hover {
+      border-color: var(--border-active);
+    }
+
+    .device-item select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .device-item select option {
+      background: var(--surface);
+    }
+
+    .device-hint {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: rgba(240, 180, 41, 0.06);
+      border: 1px solid rgba(240, 180, 41, 0.15);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--amber);
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .device-hint:hover {
+      background: rgba(240, 180, 41, 0.1);
+    }
+
+    .device-hint.hidden {
+      display: none;
+    }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%) translateY(100px);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 20px;
+      border-radius: 100px;
+      font-size: 13px;
+      z-index: 100;
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      pointer-events: none;
+      backdrop-filter: blur(12px);
+    }
+
+    .toast.visible {
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Responsive */
+    @media (max-width: 540px) {
+      .app {
+        padding: 16px;
+      }
+
+      .audio-toggles {
+        flex-direction: column;
+      }
+
+      .settings-row {
+        flex-direction: column;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="app">
+    <!-- Header -->
+    <div class="header">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"
+          stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10" />
+          <polygon points="10 8 16 12 10 16 10 8" fill="#fff" stroke="none" />
+        </svg>
+      </div>
+      <h1>ScreenCap</h1>
+      <span class="version">v1.0</span>
+    </div>
+
+    <!-- Preview -->
+    <div class="preview-container" id="previewContainer">
+      <div class="preview-placeholder" id="placeholder">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+          stroke-linejoin="round">
+          <rect x="2" y="3" width="20" height="14" rx="2" />
+          <line x1="8" y1="21" x2="16" y2="21" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+        </svg>
+        <span>Click record to start capturing</span>
+      </div>
+      <video id="preview" autoplay muted playsinline></video>
+      <div class="rec-badge" id="recBadge">
+        <div class="rec-dot"></div>
+        <span id="recBadgeText">REC</span>
+      </div>
+    </div>
+
+    <!-- Audio Sources -->
+    <div class="section">
+      <div class="section-label">Audio Sources</div>
+      <div class="audio-toggles">
+        <div class="audio-toggle active" id="toggleMic" onclick="toggleAudio('mic')">
+          <div class="icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+          </div>
+          <div class="toggle-info">
+            <span class="name">Microphone</span>
+            <span class="status" id="micStatus">enabled</span>
+          </div>
+        </div>
+        <div class="audio-toggle active" id="toggleSystem" onclick="toggleAudio('system')">
+          <div class="icon-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            </svg>
+          </div>
+          <div class="toggle-info">
+            <span class="name">System Audio</span>
+            <span class="status" id="systemStatus">enabled</span>
+          </div>
+        </div>
+      </div>
+      <!-- Mic level meter -->
+      <div class="level-meter" id="levelMeter">
+        <span class="label">MIC</span>
+        <div class="meter-bar-container">
+          <div class="meter-bar" id="meterBar"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Device Selection -->
+    <div class="section" id="deviceSection">
+      <div class="section-label-row">
+        <div class="section-label" style="margin-bottom:0">Audio Devices</div>
+        <button class="btn-icon" id="refreshDevicesBtn" onclick="enumerateDevices()" title="Refresh devices">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+            stroke-linejoin="round" width="14" height="14">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
+        </button>
+      </div>
+      <div class="device-selectors">
+        <div class="device-item">
+          <div class="device-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" width="14" height="14">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            </svg>
+            <span>Input (Microphone)</span>
+          </div>
+          <select id="micDeviceSelect">
+            <option value="">Default microphone</option>
+          </select>
+        </div>
+        <div class="device-item">
+          <div class="device-label">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+              stroke-linejoin="round" width="14" height="14">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+            </svg>
+            <span>Output (Speaker)</span>
+          </div>
+          <select id="speakerDeviceSelect">
+            <option value="">Default speaker</option>
+          </select>
+        </div>
+      </div>
+      <div class="device-hint" id="deviceHint">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" width="12" height="12">
+          <circle cx="12" cy="12" r="10" />
+          <line x1="12" y1="16" x2="12" y2="12" />
+          <line x1="12" y1="8" x2="12.01" y2="8" />
+        </svg>
+        <span>Grant mic permission to see all device names</span>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="section">
+      <div class="section-label">Settings</div>
+      <div class="settings-row">
+        <div class="setting-item">
+          <label>Quality</label>
+          <select id="qualitySelect">
+            <option value="8000000">High (8 Mbps)</option>
+            <option value="5000000" selected>Medium (5 Mbps)</option>
+            <option value="2500000">Low (2.5 Mbps)</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label>Format</label>
+          <select id="formatSelect">
+            <option value="video/webm;codecs=vp9,opus">WebM (VP9)</option>
+            <option value="video/webm;codecs=vp8,opus">WebM (VP8)</option>
+            <option value="video/mp4">MP4 (if supported)</option>
+          </select>
+        </div>
+        <div class="setting-item">
+          <label>FPS</label>
+          <select id="fpsSelect">
+            <option value="60">60</option>
+            <option value="30" selected>30</option>
+            <option value="24">24</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <div class="timer" id="timer">00:00:00</div>
+      <button class="btn btn-secondary" id="pauseBtn" disabled onclick="togglePause()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+          stroke-linejoin="round">
+          <rect x="6" y="4" width="4" height="16" />
+          <rect x="14" y="4" width="4" height="16" />
+        </svg>
+      </button>
+      <button class="btn btn-record" id="recordBtn" onclick="toggleRecording()">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <circle cx="12" cy="12" r="6" />
+        </svg>
+        <span id="recordLabel">Start Recording</span>
+      </button>
+    </div>
+
+    <!-- Download -->
+    <div class="download-section" id="downloadSection">
+      <div class="download-header">
+        <div class="info">
+          <span class="title">✓ Recording saved</span>
+          <span class="meta" id="downloadMeta">--</span>
+        </div>
+        <button class="btn btn-download" id="downloadBtn" onclick="downloadRecording()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"
+            stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="7 10 12 15 17 10" />
+            <line x1="12" y1="15" x2="12" y2="3" />
+          </svg>
+          Download
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script>
+    // ── State ────────────────────────────────────
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let screenStream = null;
+    let micStream = null;
+    let combinedStream = null;
+    let timerInterval = null;
+    let startTime = 0;
+    let elapsed = 0;
+    let isPaused = false;
+    let isRecording = false;
+    let audioCtx = null;
+    let analyser = null;
+    let animFrameId = null;
+    let blobUrl = null;
+    let recordingBlob = null;
+
+    const audioConfig = { mic: true, system: true };
+
+    // ── DOM refs ─────────────────────────────────
+    const $ = id => document.getElementById(id);
+    const preview = $('preview');
+    const previewContainer = $('previewContainer');
+    const placeholder = $('placeholder');
+    const recBadge = $('recBadge');
+    const recBadgeText = $('recBadgeText');
+    const timerEl = $('timer');
+    const pauseBtn = $('pauseBtn');
+    const recordBtn = $('recordBtn');
+    const recordLabel = $('recordLabel');
+    const downloadSection = $('downloadSection');
+    const downloadMeta = $('downloadMeta');
+    const levelMeter = $('levelMeter');
+    const meterBar = $('meterBar');
+    const micDeviceSelect = $('micDeviceSelect');
+    const speakerDeviceSelect = $('speakerDeviceSelect');
+    const deviceHint = $('deviceHint');
+    const refreshDevicesBtn = $('refreshDevicesBtn');
+
+    // ── Device Enumeration ───────────────────────
+    let hasPermission = false;
+
+    async function enumerateDevices() {
+      // Spin the refresh button
+      refreshDevicesBtn.classList.add('spinning');
+      setTimeout(() => refreshDevicesBtn.classList.remove('spinning'), 600);
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+
+        // Check if we have real labels (means permission was granted)
+        const hasLabels = devices.some(d => d.label && d.label.length > 0);
+
+        // Save current selections
+        const prevMic = micDeviceSelect.value;
+        const prevSpeaker = speakerDeviceSelect.value;
+
+        // Clear selects
+        micDeviceSelect.innerHTML = '<option value="">Default microphone</option>';
+        speakerDeviceSelect.innerHTML = '<option value="">Default speaker</option>';
+
+        let micCount = 0;
+        let speakerCount = 0;
+
+        devices.forEach(device => {
+          if (device.kind === 'audioinput') {
+            micCount++;
+            const opt = document.createElement('option');
+            opt.value = device.deviceId;
+            opt.textContent = device.label || `Microphone ${micCount}`;
+            micDeviceSelect.appendChild(opt);
+          } else if (device.kind === 'audiooutput') {
+            speakerCount++;
+            const opt = document.createElement('option');
+            opt.value = device.deviceId;
+            opt.textContent = device.label || `Speaker ${speakerCount}`;
+            speakerDeviceSelect.appendChild(opt);
+          }
+        });
+
+        // Restore selections if still available
+        if (prevMic) micDeviceSelect.value = prevMic;
+        if (prevSpeaker) speakerDeviceSelect.value = prevSpeaker;
+        // If previous value no longer exists, selects will default to ""
+
+        // Check browser support for output device selection
+        if (typeof HTMLMediaElement.prototype.setSinkId === 'undefined') {
+          speakerDeviceSelect.disabled = true;
+          speakerDeviceSelect.title = 'Output device selection not supported in this browser';
+        }
+
+        // Show/hide permission hint
+        if (hasLabels) {
+          deviceHint.classList.add('hidden');
+          hasPermission = true;
+        } else {
+          deviceHint.classList.remove('hidden');
+        }
+
+      } catch (err) {
+        console.warn('Failed to enumerate devices:', err);
+      }
+    }
+
+    // Request mic permission to unlock device labels, then enumerate
+    async function requestPermissionAndEnumerate() {
+      try {
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        tempStream.getTracks().forEach(t => t.stop());
+        hasPermission = true;
+      } catch (e) {
+        // Permission denied — still enumerate, labels will be generic
+      }
+      await enumerateDevices();
+    }
+
+    // When speaker output changes, update preview element output
+    speakerDeviceSelect.addEventListener('change', async () => {
+      if (typeof preview.setSinkId === 'function' && speakerDeviceSelect.value) {
+        try {
+          await preview.setSinkId(speakerDeviceSelect.value);
+          showToast('Output device changed');
+        } catch (err) {
+          showToast('Failed to set output device');
+        }
+      }
+    });
+
+    // Listen for device changes (plug/unplug)
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+      enumerateDevices();
+    });
+
+    // Initial enumeration on load
+    enumerateDevices();
+
+    // ── Toggle audio sources ─────────────────────
+    function toggleAudio(type) {
+      if (isRecording) return showToast('Stop recording before changing audio sources');
+      audioConfig[type] = !audioConfig[type];
+      const el = $(type === 'mic' ? 'toggleMic' : 'toggleSystem');
+      const statusEl = $(type === 'mic' ? 'micStatus' : 'systemStatus');
+      el.classList.toggle('active', audioConfig[type]);
+      statusEl.textContent = audioConfig[type] ? 'enabled' : 'disabled';
+
+      // If mic was just enabled and we don't have permission yet, request it
+      if (type === 'mic' && audioConfig.mic && !hasPermission) {
+        requestPermissionAndEnumerate();
+      }
+    }
+
+    // Click on hint to request mic permission
+    deviceHint.addEventListener('click', () => {
+      requestPermissionAndEnumerate();
+    });
+
+    // ── Recording ────────────────────────────────
+    async function toggleRecording() {
+      if (isRecording) {
+        stopRecording();
+      } else {
+        await startRecording();
+      }
+    }
+
+    async function startRecording() {
+      // Feature detection
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        let msg = 'Screen recording API not found.';
+        if (window.isSecureContext === false) {
+          msg = 'HTTPS required. Screen recording is blocked on insecure (HTTP) connections.';
+        } else if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+          msg = 'Mobile browsers often do not support screen recording. Try a desktop browser.';
+        }
+        showToast(msg);
+        alert(msg); // Alert is more visible on mobile
+        return;
+      }
+
+      try {
+        recordedChunks = [];
+        downloadSection.classList.remove('visible');
+        if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+
+        const fps = parseInt($('fpsSelect').value);
+
+        // Get screen stream (with system audio if enabled)
+        const displayOptions = {
+          video: { frameRate: { ideal: fps } },
+          audio: audioConfig.system  // request system audio
+        };
+
+        screenStream = await navigator.mediaDevices.getDisplayMedia(displayOptions);
+
+        // Show preview
+        preview.srcObject = screenStream;
+        preview.style.display = 'block';
+        placeholder.classList.add('hidden');
+
+        // Handle user stopping share via browser UI
+        screenStream.getVideoTracks()[0].addEventListener('ended', () => {
+          if (isRecording) stopRecording();
+        });
+
+        // Build combined stream
+        const tracks = [...screenStream.getVideoTracks()];
+
+        // Audio mixing
+        audioCtx = new AudioContext();
+        const destination = audioCtx.createMediaStreamDestination();
+        let hasAudio = false;
+
+        // System audio from screen capture
+        if (audioConfig.system && screenStream.getAudioTracks().length > 0) {
+          const systemSource = audioCtx.createMediaStreamSource(
+            new MediaStream(screenStream.getAudioTracks())
+          );
+          systemSource.connect(destination);
+          hasAudio = true;
+        }
+
+        // Microphone
+        if (audioConfig.mic) {
+          try {
+            const micConstraints = {
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+              }
+            };
+            // Use selected mic device if not default
+            const selectedMicId = micDeviceSelect.value;
+            if (selectedMicId) {
+              micConstraints.audio.deviceId = { exact: selectedMicId };
+            }
+
+            micStream = await navigator.mediaDevices.getUserMedia(micConstraints);
+            const micSource = audioCtx.createMediaStreamSource(micStream);
+            micSource.connect(destination);
+            hasAudio = true;
+
+            // Setup level meter
+            analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            micSource.connect(analyser);
+            levelMeter.classList.add('visible');
+            drawMeter();
+          } catch (err) {
+            console.warn('Mic access denied:', err);
+            showToast('Microphone access denied — recording without mic');
+          }
+        }
+
+        if (hasAudio) {
+          tracks.push(...destination.stream.getAudioTracks());
+        }
+
+        combinedStream = new MediaStream(tracks);
+
+        // Determine mime type
+        let mimeType = $('formatSelect').value;
+        if (!MediaRecorder.isTypeSupported(mimeType)) {
+          mimeType = 'video/webm;codecs=vp8,opus';
+          if (!MediaRecorder.isTypeSupported(mimeType)) {
+            mimeType = 'video/webm';
+          }
+        }
+
+        const bitrate = parseInt($('qualitySelect').value);
+
+        mediaRecorder = new MediaRecorder(combinedStream, {
+          mimeType,
+          videoBitsPerSecond: bitrate
+        });
+
+        mediaRecorder.ondataavailable = e => {
+          if (e.data.size > 0) recordedChunks.push(e.data);
+        };
+
+        mediaRecorder.onstop = onRecordingStopped;
+
+        mediaRecorder.start(1000); // collect data every 1s
+        isRecording = true;
+        isPaused = false;
+
+        // UI updates
+        startTimer();
+        updateUI('recording');
+        showToast('Recording started');
+
+      } catch (err) {
+        console.error('Recording failed:', err);
+        cleanup();
+        if (err.name === 'NotAllowedError') {
+          showToast('Screen sharing was cancelled');
+        } else {
+          showToast('Failed to start recording: ' + err.message);
+        }
+      }
+    }
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      isRecording = false;
+      isPaused = false;
+      stopTimer();
+      updateUI('stopped');
+    }
+
+    function onRecordingStopped() {
+      const mimeType = mediaRecorder.mimeType || 'video/webm';
+      recordingBlob = new Blob(recordedChunks, { type: mimeType });
+      blobUrl = URL.createObjectURL(recordingBlob);
+
+      // Show in preview
+      preview.srcObject = null;
+      preview.src = blobUrl;
+      preview.muted = false;
+      preview.loop = true;
+
+      // Set output device for playback if selected
+      const selectedSpeaker = speakerDeviceSelect.value;
+      if (selectedSpeaker && typeof preview.setSinkId === 'function') {
+        preview.setSinkId(selectedSpeaker).catch(() => { });
+      }
+
+      preview.play();
+
+      // File info
+      const sizeMB = (recordingBlob.size / (1024 * 1024)).toFixed(1);
+      const dur = formatTime(elapsed);
+      downloadMeta.textContent = `${dur}  ·  ${sizeMB} MB  ·  ${mimeType.includes('mp4') ? 'MP4' : 'WebM'}`;
+      downloadSection.classList.add('visible');
+
+      cleanup();
+      showToast('Recording complete');
+    }
+
+    // ── Pause / Resume ───────────────────────────
+    function togglePause() {
+      if (!isRecording || !mediaRecorder) return;
+
+      if (isPaused) {
+        mediaRecorder.resume();
+        isPaused = false;
+        resumeTimer();
+        updateUI('recording');
+        showToast('Recording resumed');
+      } else {
+        mediaRecorder.pause();
+        isPaused = true;
+        pauseTimer();
+        updateUI('paused');
+        showToast('Recording paused');
+      }
+    }
+
+    // ── Download ─────────────────────────────────
+    function downloadRecording() {
+      if (!blobUrl) return;
+      const ext = (recordingBlob?.type || '').includes('mp4') ? 'mp4' : 'webm';
+      const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `screencap-${ts}.${ext}`;
+      a.click();
+    }
+
+    // ── Timer ────────────────────────────────────
+    function startTimer() {
+      elapsed = 0;
+      startTime = Date.now();
+      timerInterval = setInterval(updateTimer, 200);
+      updateTimer();
+    }
+
+    function updateTimer() {
+      elapsed = Math.floor((Date.now() - startTime) / 1000);
+      timerEl.textContent = formatTime(elapsed);
+    }
+
+    function pauseTimer() {
+      clearInterval(timerInterval);
+      elapsed = Math.floor((Date.now() - startTime) / 1000);
+    }
+
+    function resumeTimer() {
+      startTime = Date.now() - elapsed * 1000;
+      timerInterval = setInterval(updateTimer, 200);
+    }
+
+    function stopTimer() {
+      clearInterval(timerInterval);
+    }
+
+    function formatTime(secs) {
+      const h = String(Math.floor(secs / 3600)).padStart(2, '0');
+      const m = String(Math.floor((secs % 3600) / 60)).padStart(2, '0');
+      const s = String(secs % 60).padStart(2, '0');
+      return `${h}:${m}:${s}`;
+    }
+
+    // ── Audio level meter ────────────────────────
+    function drawMeter() {
+      if (!analyser) return;
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(data);
+      const avg = data.reduce((a, b) => a + b, 0) / data.length;
+      const pct = Math.min(100, (avg / 128) * 100);
+      meterBar.style.width = pct + '%';
+      animFrameId = requestAnimationFrame(drawMeter);
+    }
+
+    // ── UI state ─────────────────────────────────
+    function updateUI(state) {
+      previewContainer.classList.remove('recording', 'paused');
+      recBadge.classList.remove('visible', 'paused');
+      timerEl.classList.remove('recording', 'paused');
+      recordBtn.classList.remove('recording');
+      pauseBtn.classList.remove('active');
+
+      if (state === 'recording') {
+        previewContainer.classList.add('recording');
+        recBadge.classList.add('visible');
+        recBadgeText.textContent = 'REC';
+        timerEl.classList.add('recording');
+        recordBtn.classList.add('recording');
+        recordLabel.textContent = 'Stop';
+        pauseBtn.disabled = false;
+      } else if (state === 'paused') {
+        previewContainer.classList.add('paused');
+        recBadge.classList.add('visible', 'paused');
+        recBadgeText.textContent = 'PAUSED';
+        timerEl.classList.add('paused');
+        recordBtn.classList.add('recording');
+        recordLabel.textContent = 'Stop';
+        pauseBtn.disabled = false;
+        pauseBtn.classList.add('active');
+      } else {
+        recordLabel.textContent = 'Start Recording';
+        pauseBtn.disabled = true;
+        timerEl.textContent = '00:00:00';
+      }
+    }
+
+    // ── Cleanup ──────────────────────────────────
+    function cleanup() {
+      if (screenStream) {
+        screenStream.getTracks().forEach(t => t.stop());
+        screenStream = null;
+      }
+      if (micStream) {
+        micStream.getTracks().forEach(t => t.stop());
+        micStream = null;
+      }
+      if (audioCtx) {
+        audioCtx.close().catch(() => { });
+        audioCtx = null;
+        analyser = null;
+      }
+      if (animFrameId) {
+        cancelAnimationFrame(animFrameId);
+        animFrameId = null;
+      }
+      levelMeter.classList.remove('visible');
+      meterBar.style.width = '0%';
+    }
+
+    // ── Toast ────────────────────────────────────
+    function showToast(msg) {
+      const t = $('toast');
+      t.textContent = msg;
+      t.classList.add('visible');
+      setTimeout(() => t.classList.remove('visible'), 2500);
+    }
+
+    // ── Keyboard shortcuts ───────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.target.tagName === 'SELECT') return;
+      if (e.code === 'Space' && !e.shiftKey) {
+        e.preventDefault();
+        if (isRecording) togglePause();
+        else toggleRecording();
+      }
+      if (e.code === 'Escape' && isRecording) {
+        stopRecording();
+      }
+    });
+
+    // ── Check format support on load ─────────────
+    (function checkFormats() {
+      const sel = $('formatSelect');
+      for (const opt of sel.options) {
+        if (!MediaRecorder.isTypeSupported(opt.value)) {
+          opt.textContent += ' (unsupported)';
+          opt.disabled = true;
+        }
+      }
+    })();
+  </script>
+</body>
+
+</html>
